@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Income Inequality Across US Counties</title>
+    <script src="https://d3js.org/d3.v6.min.js"></script>
+    <script src="https://d3js.org/d3.v6.min.js"></script>
+    <script src="https://unpkg.com/topojson@3"></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        text-align: center;
+        margin: 20px;
+        background-color: #f8f9fa;
+      }
+      .map-container {
+        display: flex;
+        justify-content: center;
+        margin-bottom: 20px;
+      }
+      svg {
+        width: 1100px;
+        height: 700px;
+        background: white;
+        border-radius: 10px;
+        box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.1);
+      }
+      .tooltip {
+        position: absolute;
+        background: rgba(255, 255, 255, 0.9);
+        padding: 8px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        pointer-events: none;
+        display: none;
+        box-shadow: 2px 2px 10px rgba(0, 0, 0, 0.15);
+      }
+      select,
+      button,
+      input {
+        margin: 10px;
+        padding: 8px;
+        font-size: 16px;
+        border-radius: 5px;
+        border: 1px solid #ccc;
+        background: white;
+        cursor: pointer;
+      }
+      .county {
+        stroke: #fff;
+        stroke-width: 0.5px;
+        transition: fill 0.2s ease-in-out;
+      }
+      .highlighted {
+        stroke: black;
+        stroke-width: 3px;
+      }
+      .hovered {
+        stroke: black !important;
+        stroke-width: 2px;
+        filter: brightness(80%);
+      }
+      .error {
+        color: red;
+        font-size: 14px;
+      }
+    </style>
+
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        text-align: center;
+      }
+      h1,
+      h3 {
+        color: #333;
+      }
+      .chart-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        flex-direction: column;
+        margin-bottom: 50px;
+      }
+      .axis-label {
+        font-size: 14px;
+      }
+      .tooltip {
+        position: absolute;
+        background: white;
+        border: 1px solid #ccc;
+        padding: 8px;
+        font-size: 12px;
+        display: none;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Income Inequality Across US Counties</h1>
+    <h2>Data Source: USDA Atlas of Rural and Small-Town America</h2>
+    <label for="metric">Select Metric:</label>
+    <select id="metric">
+      <option value="income">Median Household Income</option>
+      <option value="poverty">Poverty Rate</option>
+    </select>
+
+    <input type="text" id="searchBox" placeholder="Enter county name..." />
+    <button id="searchButton">Search</button>
+    <p class="error" id="errorMessage"></p>
+
+    <button id="resetZoom">Reset Zoom</button>
+
+    <div class="map-container">
+      <svg></svg>
+    </div>
+
+    <div class="tooltip" id="tooltip"></div>
+    <div class="chart-container">
+      <h2>Distribution of Median Household Income</h2>
+      <svg id="income-histogram" width="800" height="500"></svg>
+    </div>
+
+    <div class="chart-container">
+      <h2>Distribution of Poverty Rate</h2>
+      <svg id="poverty-histogram" width="800" height="500"></svg>
+    </div>
+
+    <div class="chart-container">
+      <h2>Correlation Between Income & Poverty</h2>
+      <svg id="scatterplot" width="800" height="500"></svg>
+    </div>
+
+    <div class="tooltip" id="tooltip"></div>
+
+    <script>
+      const width = 1100,
+        height = 700;
+      const svg = d3.select("svg");
+      const tooltip = d3.select("#tooltip");
+
+      const zoom = d3
+        .zoom()
+        .scaleExtent([1, 8])
+        .on("zoom", function (event) {
+          mapGroup.attr("transform", event.transform);
+        });
+
+      svg.call(zoom);
+      const mapGroup = svg.append("g");
+
+      const projection = d3
+        .geoAlbersUsa()
+        .scale(1400)
+        .translate([width / 2, height / 2]);
+
+      const pathGenerator = d3.geoPath().projection(projection);
+
+      const colorScales = {
+        income: d3.scaleSequential(d3.interpolateYlOrBr),
+        poverty: d3.scaleSequential(d3.interpolatePuOr),
+      };
+
+      let countyData = [];
+      let countyShapes;
+      let currentMetric = "income";
+      let lastSearchedCounty = null; // Store last searched county for updates
+
+      function createMap(us, data) {
+        countyData = data;
+        countyShapes = topojson.feature(us, us.objects.counties);
+
+        const incomeExtent = d3.extent(data, (d) => +d.Median_Household_Income);
+        const povertyExtent = d3.extent(data, (d) => +d.Poverty_Rate);
+
+        colorScales.income.domain([incomeExtent[0] * 0.6, incomeExtent[1] * 1]);
+        colorScales.poverty.domain([
+          povertyExtent[0] * 0.6,
+          povertyExtent[1] * 1,
+        ]);
+
+        mapGroup
+          .selectAll(".county")
+          .data(countyShapes.features)
+          .enter()
+          .append("path")
+          .attr("class", "county")
+          .attr("d", pathGenerator)
+          .attr("fill", "#ccc")
+          .on("mouseover", function (event, d) {
+            d3.select(this).classed("hovered", true);
+            showTooltip(event, d);
+          })
+          .on("mouseout", function () {
+            d3.select(this).classed("hovered", false);
+            tooltip.style("display", "none");
+          });
+
+        updateMap("income");
+      }
+
+      function updateMap(metric) {
+        currentMetric = metric;
+        let scale = colorScales[metric];
+        let dataKey =
+          metric === "income" ? "Median_Household_Income" : "Poverty_Rate";
+        let extent = d3.extent(countyData, (d) => +d[dataKey]);
+
+        mapGroup
+          .selectAll(".county")
+          .transition()
+          .duration(500)
+          .attr("fill", (d) => {
+            const countyInfo = countyData.find(
+              (c) => c.County === d.properties.name
+            );
+            return countyInfo ? scale(+countyInfo[dataKey]) : "#d3d3d3";
+          });
+
+        // If a county was searched, update its tooltip
+        if (lastSearchedCounty) {
+          setTimeout(
+            () =>
+              showTooltip(
+                { pageX: width / 2, pageY: height / 2 },
+                lastSearchedCounty
+              ),
+            500
+          );
+        }
+      }
+
+      function showTooltip(event, d) {
+        const countyInfo = countyData.find(
+          (c) => c.County === d.properties.name
+        );
+        if (countyInfo) {
+          let tooltipText = `<strong>${countyInfo.County}</strong><br>`;
+          tooltipText +=
+            currentMetric === "income"
+              ? `Income: $${countyInfo.Median_Household_Income || "No Data"}`
+              : `Poverty: ${countyInfo.Poverty_Rate || "No Data"}%`;
+
+          tooltip
+            .style("display", "block")
+            .html(tooltipText)
+            .style("left", event.pageX + 10 + "px")
+            .style("top", event.pageY - 20 + "px");
+        }
+      }
+
+      function searchCounty() {
+        const searchInput = document
+          .getElementById("searchBox")
+          .value.trim()
+          .toLowerCase();
+        const errorMessage = document.getElementById("errorMessage");
+
+        d3.selectAll(".county").classed("highlighted", false);
+
+        d3.select("#resetZoom").on("click", function () {
+          svg.transition().duration(750).call(zoom.transform, d3.zoomIdentity);
+        });
+
+        const countyFeature = countyShapes.features.find(
+          (d) => d.properties.name.toLowerCase() === searchInput
+        );
+
+        if (countyFeature) {
+          errorMessage.textContent = "";
+          lastSearchedCounty = countyFeature; // Store searched county
+
+          d3.selectAll(".county")
+            .filter((d) => d.properties.name.toLowerCase() === searchInput)
+            .classed("highlighted", true);
+
+          const bounds = pathGenerator.bounds(countyFeature);
+          const x = (bounds[0][0] + bounds[1][0]) / 2;
+          const y = (bounds[0][1] + bounds[1][1]) / 2;
+          const scale = Math.max(
+            1,
+            Math.min(
+              8,
+              0.9 /
+                Math.max(
+                  (bounds[1][0] - bounds[0][0]) / width,
+                  (bounds[1][1] - bounds[0][1]) / height
+                )
+            )
+          );
+          const translate = [width / 2 - scale * x, height / 2 - scale * y];
+
+          svg
+            .transition()
+            .duration(750)
+            .call(
+              zoom.transform,
+              d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale)
+            );
+
+          setTimeout(
+            () =>
+              showTooltip(
+                { pageX: width / 2, pageY: height / 2 },
+                countyFeature
+              ),
+            750
+          );
+        } else {
+          errorMessage.textContent = "County not found. Try another name.";
+        }
+      }
+
+      d3.select("#metric").on("change", function () {
+        updateMap(this.value);
+      });
+
+      d3.select("#searchButton").on("click", searchCounty);
+
+      d3.json("us_counties.json").then((us) => {
+        d3.csv("data.csv").then((data) => {
+          createMap(us, data);
+        });
+      });
+      // Load CSV file
+      d3.csv("data.csv").then(function (data) {
+        // Convert values to numbers
+        data.forEach((d) => {
+          d.Median_Household_Income = +d.Median_Household_Income;
+          d.Poverty_Rate = +d.Poverty_Rate;
+        });
+
+        // Tooltip setup
+        const tooltip = d3.select("#tooltip");
+
+        // Histogram Function
+        function createHistogram(data, valueKey, svgId, color, xLabel) {
+          const margin = { top: 30, right: 30, bottom: 50, left: 80 },
+            width = 800 - margin.left - margin.right,
+            height = 650 - margin.top - margin.bottom;
+
+          const svg = d3
+            .select(svgId)
+            .append("g")
+            .attr("transform", `translate(${margin.left},${margin.top})`);
+
+          const x = d3
+            .scaleLinear()
+            .domain([
+              d3.min(data, (d) => d[valueKey]),
+              d3.max(data, (d) => d[valueKey]),
+            ])
+            .nice()
+            .range([0, width]);
+
+          const histogram = d3
+            .histogram()
+            .value((d) => d[valueKey])
+            .domain(x.domain())
+            .thresholds(x.ticks(30));
+
+          const bins = histogram(data);
+
+          const y = d3
+            .scaleLinear()
+            .domain([0, d3.max(bins, (d) => d.length)])
+            .nice()
+            .range([height, 0]);
+
+          svg
+            .selectAll("rect")
+            .data(bins)
+            .enter()
+            .append("rect")
+            .attr("x", (d) => x(d.x0))
+            .attr("y", (d) => y(d.length))
+            .attr("width", (d) => x(d.x1) - x(d.x0) - 1)
+            .attr("height", (d) => height - y(d.length))
+            .style("fill", color)
+            .style("stroke", "black")
+            .on("mouseover", function (event, d) {
+              tooltip
+                .style("display", "block")
+                .html(`Counties: ${d.length}`)
+                .style("left", event.pageX + 10 + "px")
+                .style("top", event.pageY - 20 + "px");
+              d3.select(this).style("fill", "darkorange");
+            })
+            .on("mouseout", function () {
+              tooltip.style("display", "none");
+              d3.select(this).style("fill", color);
+            });
+
+          svg
+            .append("g")
+            .attr("transform", `translate(0,${height})`)
+            .call(d3.axisBottom(x).tickFormat(d3.format(",")));
+
+          svg.append("g").call(d3.axisLeft(y));
+
+          svg
+            .append("text")
+            .attr("x", width / 2)
+            .attr("y", height + 40)
+            .attr("text-anchor", "middle")
+            .text(xLabel);
+
+          svg
+            .append("text")
+            .attr("transform", "rotate(-90)")
+            .attr("x", -height / 2)
+            .attr("y", -50)
+            .attr("text-anchor", "middle")
+            .text("Number of Counties");
+        }
+
+        // Create Histograms
+        createHistogram(
+          data,
+          "Median_Household_Income",
+          "#income-histogram",
+          "orange",
+          "Median Household Income ($)"
+        );
+        createHistogram(
+          data,
+          "Poverty_Rate",
+          "#poverty-histogram",
+          "skyblue",
+          "Poverty Rate (%)"
+        );
+
+        // Scatterplot
+        const margin = { top: 30, right: 30, bottom: 50, left: 80 },
+          width = 800 - margin.left - margin.right,
+          height = 650 - margin.top - margin.bottom;
+
+        const svg = d3
+          .select("#scatterplot")
+          .append("g")
+          .attr("transform", `translate(${margin.left},${margin.top})`);
+
+        const x = d3
+          .scaleLinear()
+          .domain([
+            d3.min(data, (d) => d.Median_Household_Income) * 0.9,
+            d3.max(data, (d) => d.Median_Household_Income) * 1.1,
+          ])
+          .range([0, width]);
+
+        const y = d3
+          .scaleLinear()
+          .domain([
+            d3.min(data, (d) => d.Poverty_Rate) * 0.9,
+            d3.max(data, (d) => d.Poverty_Rate) * 1.1,
+          ])
+          .range([height, 0]);
+
+        svg
+          .append("g")
+          .attr("transform", `translate(0,${height})`)
+          .call(d3.axisBottom(x).tickFormat(d3.format("$,")));
+
+        svg.append("g").call(d3.axisLeft(y));
+
+        svg
+          .append("text")
+          .attr("x", width / 2)
+          .attr("y", height + 40)
+          .attr("text-anchor", "middle")
+          .attr("class", "axis-label")
+          .text("Median Household Income ($)");
+
+        // Y-axis label
+        svg
+          .append("text")
+          .attr("transform", "rotate(-90)")
+          .attr("x", -height / 2)
+          .attr("y", -50)
+          .attr("text-anchor", "middle")
+          .attr("class", "axis-label")
+          .text("Poverty Rate (%)");
+
+        svg
+          .selectAll("circle")
+          .data(data)
+          .enter()
+          .append("circle")
+          .attr("cx", (d) => x(d.Median_Household_Income))
+          .attr("cy", (d) => y(d.Poverty_Rate))
+          .attr("r", 5)
+          .style("fill", "steelblue")
+          .style("opacity", 0.7)
+          .on("mouseover", function (event, d) {
+            tooltip
+              .style("display", "block")
+              .html(
+                `<strong>County:</strong> ${
+                  d.County
+                }<br><strong>Income:</strong> $${d.Median_Household_Income.toLocaleString()}<br><strong>Poverty Rate:</strong> ${d.Poverty_Rate.toFixed(
+                  2
+                )}%`
+              )
+              .style("left", event.pageX + 10 + "px")
+              .style("top", event.pageY - 20 + "px");
+            d3.select(this).attr("r", 8).style("opacity", 1);
+          })
+          .on("mouseout", function () {
+            tooltip.style("display", "none");
+            d3.select(this).attr("r", 5).style("opacity", 0.7);
+          });
+      });
+    </script>
+  </body>
+</html>
